@@ -1,24 +1,30 @@
-From 71add81f4a3f1ea505f498d789e7a1721c4d7a6e Mon Sep 17 00:00:00 2001
-From: Seevalamuthu Mariappan <seevalam@codeaurora.org>
-Date: Mon, 4 Sep 2023 12:48:19 +0530
-Subject: [PATCH] ath11k: Add support for dynamic vlan
+Subject: [PATCH v3] ath11k: add support for dynamic vlan (ap/vlan)
 
-This patch adds support for dynamic vlan. VLAN group traffics
-are encrypted in software. vlan unicast packets shall be taking
-8023 xmit path if encap offload is enabled and mcast/bcast will
-be using 80211 xmit path.
+ath11k currently lacks support for dynamic vlan (AP/VLAN), so make
+'__ath11k_mac_register' in dp_tx to register 'NL80211_IFTYPE_AP_VLAN'
+as available interface mode.
 
-Metadata info in dp_tx added to notify firmware that the
-multicast/broadcast packets are encrypted in sw.
+Make 'ath11k_dp_tx' in dp_tx to add metadata info to notify firmware
+that the multicast/broadcast packets are encrypted in software.
 
+Make '__ieee80211_subif_start_xmit' in tx to offload encapsulation
+for VLAN unicast packets using 8023 xmit path instead of current
+80211 xmit path.
+
+Tested, long-term in production environment using OpenWrt platform
+installed on multiple AX3600 with FT:
+ Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.9.0.1-01385-QCAHKSWPL_SILICONZ-1
+ Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.9.0.1-01977-QCAHKSWPL_SILICONZ-1
+
+Co-developed-by: Seevalamuthu Mariappan <seevalam@codeaurora.org>
 Signed-off-by: Seevalamuthu Mariappan <seevalam@codeaurora.org>
 Signed-off-by: David Rapan <david@rapan.cz>
 ---
- drivers/net/wireless/ath/ath11k/core.h  |   1 +
- drivers/net/wireless/ath/ath11k/dp_tx.c |  82 +++++++++-
- drivers/net/wireless/ath/ath11k/dp_tx.h | 197 ++++++++++++++++++++++++
- drivers/net/wireless/ath/ath11k/mac.c   |   3 +
- 4 files changed, 281 insertions(+), 2 deletions(-)
+ drivers/net/wireless/ath/ath11k/core.h     |   1 +
+ drivers/net/wireless/ath/ath11k/dp_tx.c    |  83 +++++++++-
+ drivers/net/wireless/ath/ath11k/hal_desc.h | 160 ++++++++++++++++++++
+ drivers/net/wireless/ath/ath11k/mac.c      |   3 +
+ 4 files changed, 245 insertions(+), 2 deletions(-)
 
 --- a/drivers/net/wireless/ath/ath11k/core.h
 +++ b/drivers/net/wireless/ath/ath11k/core.h
@@ -32,7 +38,7 @@ Signed-off-by: David Rapan <david@rapan.cz>
  struct ath11k_skb_rxcb {
 --- a/drivers/net/wireless/ath/ath11k/dp_tx.c
 +++ b/drivers/net/wireless/ath/ath11k/dp_tx.c
-@@ -79,6 +79,42 @@ enum hal_encrypt_type ath11k_dp_tx_get_e
+@@ -79,6 +79,43 @@ enum hal_encrypt_type ath11k_dp_tx_get_e
  	}
  }
  
@@ -55,19 +61,20 @@ Signed-off-by: David Rapan <david@rapan.cz>
 +	/* Size rounded of multiple of 8 bytes */
 +	u8 htt_desc_size_aligned;
 +	int ret;
-+	struct htt_tx_msdu_desc_ext *desc_ext;
++	struct hal_tx_msdu_metadata *desc_ext;
 +
-+	htt_desc_size = sizeof(struct htt_tx_msdu_desc_ext);
++	htt_desc_size = sizeof(struct hal_tx_msdu_metadata);
 +	htt_desc_size_aligned = ALIGN(htt_desc_size, HTT_META_DATA_ALIGNMENT);
 +
 +	ret = ath11k_dp_metadata_align_skb(skb, htt_desc_size_aligned);
 +	if (unlikely(ret))
 +		return ret;
 +
-+	desc_ext = (struct htt_tx_msdu_desc_ext *)skb->data;
-+	desc_ext->valid_encrypt_type = 1;
-+	desc_ext->encrypt_type = 0;
-+	desc_ext->host_tx_desc_pool = 1;
++	desc_ext = (struct hal_tx_msdu_metadata *)skb->data;
++	desc_ext->info0 = le32_encode_bits(1, HAL_TX_MSDU_METADATA_INFO0_ENCRYPT_FLAG) |
++			  le32_encode_bits(0, HAL_TX_MSDU_METADATA_INFO0_ENCRYPT_TYPE) |
++			  le32_encode_bits(1,
++					   HAL_TX_MSDU_METADATA_INFO0_HOST_TX_DESC_POOL);
 +	*htt_metadata_size = htt_desc_size_aligned;
 +	return 0;
 +}
@@ -75,7 +82,7 @@ Signed-off-by: David Rapan <david@rapan.cz>
  int ath11k_dp_tx(struct ath11k *ar, struct ath11k_vif *arvif,
  		 struct ath11k_sta *arsta, struct sk_buff *skb)
  {
-@@ -97,6 +133,9 @@ int ath11k_dp_tx(struct ath11k *ar, stru
+@@ -97,6 +134,9 @@ int ath11k_dp_tx(struct ath11k *ar, stru
  	u32 ring_selector = 0;
  	u8 ring_map = 0;
  	bool tcl_ring_retry;
@@ -85,7 +92,7 @@ Signed-off-by: David Rapan <david@rapan.cz>
  
  	if (unlikely(test_bit(ATH11K_FLAG_CRASH_FLUSH, &ar->ab->dev_flags)))
  		return -ESHUTDOWN;
-@@ -189,7 +228,12 @@ tcl_ring_sel:
+@@ -189,7 +229,12 @@ tcl_ring_sel:
  
  	switch (ti.encap_type) {
  	case HAL_TCL_ENCAP_TYPE_NATIVE_WIFI:
@@ -99,7 +106,7 @@ Signed-off-by: David Rapan <david@rapan.cz>
  		break;
  	case HAL_TCL_ENCAP_TYPE_RAW:
  		if (!test_bit(ATH11K_FLAG_RAW_MODE, &ab->dev_flags)) {
-@@ -208,6 +252,33 @@ tcl_ring_sel:
+@@ -208,6 +253,33 @@ tcl_ring_sel:
  		goto fail_remove_idr;
  	}
  
@@ -133,7 +140,7 @@ Signed-off-by: David Rapan <david@rapan.cz>
  	ti.paddr = dma_map_single(ab->dev, skb->data, skb->len, DMA_TO_DEVICE);
  	if (unlikely(dma_mapping_error(ab->dev, ti.paddr))) {
  		atomic_inc(&ab->soc_stats.tx_err.misc_fail);
-@@ -216,7 +287,8 @@ tcl_ring_sel:
+@@ -216,7 +288,8 @@ tcl_ring_sel:
  		goto fail_remove_idr;
  	}
  
@@ -143,7 +150,7 @@ Signed-off-by: David Rapan <david@rapan.cz>
  	skb_cb->paddr = ti.paddr;
  	skb_cb->vif = arvif->vif;
  	skb_cb->ar = ar;
-@@ -272,6 +344,8 @@ fail_unmap_dma:
+@@ -272,6 +345,8 @@ fail_unmap_dma:
  	dma_unmap_single(ab->dev, ti.paddr, ti.data_len, DMA_TO_DEVICE);
  
  fail_remove_idr:
@@ -152,7 +159,7 @@ Signed-off-by: David Rapan <david@rapan.cz>
  	spin_lock_bh(&tx_ring->tx_idr_lock);
  	idr_remove(&tx_ring->txbuf_idr,
  		   FIELD_GET(DP_TX_DESC_ID_MSDU_ID, ti.desc_id));
-@@ -348,6 +422,10 @@ ath11k_dp_tx_htt_tx_complete_buf(struct
+@@ -348,6 +423,10 @@ ath11k_dp_tx_htt_tx_complete_buf(struct
  		return;
  	}
  
@@ -163,13 +170,23 @@ Signed-off-by: David Rapan <david@rapan.cz>
  	memset(&info->status, 0, sizeof(info->status));
  
  	if (ts->acked) {
---- a/drivers/net/wireless/ath/ath11k/dp_tx.h
-+++ b/drivers/net/wireless/ath/ath11k/dp_tx.h
-@@ -17,6 +17,203 @@ struct ath11k_dp_htt_wbm_tx_status {
- 	u16 peer_id;
- };
- 
-+/* htt_tx_msdu_desc_ext
+--- a/drivers/net/wireless/ath/ath11k/hal_desc.h
++++ b/drivers/net/wireless/ath/ath11k/hal_desc.h
+@@ -2490,5 +2490,165 @@
+  *		A count value that indicates the number of times the producer of
+  *		entries into this Ring has looped around the ring.
+  */
++
++#define HAL_TX_MSDU_METADATA_INFO0_ENCRYPT_FLAG		BIT(8)
++#define HAL_TX_MSDU_METADATA_INFO0_ENCRYPT_TYPE		GENMASK(16, 15)
++#define HAL_TX_MSDU_METADATA_INFO0_HOST_TX_DESC_POOL	BIT(31)
++
++struct hal_tx_msdu_metadata {
++	__le32 info0;
++	__le32 rsvd0[6];
++} __packed;
++
++/* hal_tx_msdu_metadata
 + *
 + * valid_pwr
 + *		If set, tx pwr spec is valid
@@ -319,56 +336,8 @@ Signed-off-by: David Rapan <david@rapan.cz>
 + * host_opaque_cookie
 + *		Host opaque cookie for special frames
 + */
-+struct htt_tx_msdu_desc_ext {
-+	u32
-+		valid_pwr            :  1,
-+		valid_mcs_mask       :  1,
-+		valid_nss_mask       :  1,
-+		valid_preamble_type  :  1,
-+		valid_retries        :  1,
-+		valid_bw_info        :  1,
-+		valid_guard_interval :  1,
-+		valid_chainmask      :  1,
-+		valid_encrypt_type   :  1,
-+		valid_key_flags      :  1,
-+		valid_expire_tsf     :  1,
-+		valid_chanfreq       :  1,
-+		is_dsrc              :  1,
-+		guard_interval       :  2,
-+		encrypt_type         :  2,
-+		retry_limit          :  4,
-+		use_dcm_11ax         :  1,
-+		ltf_subtype_11ax     :  2,
-+		dyn_bw               :  1,
-+		bw_mask              :  6,
-+		host_tx_desc_pool    :  1;
-+	u32
-+		power                :  8,
-+		mcs_mask             : 12,
-+		nss_mask             :  8,
-+		pream_type           :  3,
-+		update_peer_cache    :  1;
-+	u32
-+		chain_mask           :  8,
-+		key_flags            :  8,
-+		chanfreq             : 16;
-+
-+	u32 expire_tsf_lo;
-+	u32 expire_tsf_hi;
-+
-+	u32
-+		learning_frame       :  1,
-+		send_as_standalone   :  1,
-+		is_host_opaque_valid :  1,
-+		rsvd0                : 29;
-+	u32
-+		host_opaque_cookie   : 16,
-+		rsvd1                : 16;
-+} __packed;
-+
- void ath11k_dp_tx_update_txcompl(struct ath11k *ar, struct hal_tx_status *ts);
- int ath11k_dp_tx_htt_h2t_ver_req_msg(struct ath11k_base *ab);
- int ath11k_dp_tx(struct ath11k *ar, struct ath11k_vif *arvif,
+ 
+ #endif /* ATH11K_HAL_DESC_H */
 --- a/drivers/net/wireless/ath/ath11k/mac.c
 +++ b/drivers/net/wireless/ath/ath11k/mac.c
 @@ -10260,6 +10260,9 @@ static int __ath11k_mac_register(struct

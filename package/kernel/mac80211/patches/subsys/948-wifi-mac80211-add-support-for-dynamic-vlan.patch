@@ -1,21 +1,26 @@
-From f013e1e9829ec346fa0a215552eef51953b46bf0 Mon Sep 17 00:00:00 2001
-From: Seevalamuthu Mariappan <seevalam@codeaurora.org>
-Date: Fri, 7 Aug 2020 18:24:32 +0530
-Subject: [PATCH] ath11k: Add support for dynamic vlan
+Subject: [PATCH v3] ath11k: add support for dynamic vlan (ap/vlan)
 
-This patch adds support for dynamic vlan. VLAN group traffics
-are encrypted in software. vlan unicast packets shall be taking
-8023 xmit path if encap offload is enabled and mcast/bcast will
-be using 80211 xmit path.
+ath11k currently lacks support for dynamic vlan (AP/VLAN), so make
+'__ath11k_mac_register' in dp_tx to register 'NL80211_IFTYPE_AP_VLAN'
+as available interface mode.
 
-Metadata info in dp_tx added to notify firmware that the
-multicast/broadcast packets are encrypted in sw.
+Make 'ath11k_dp_tx' in dp_tx to add metadata info to notify firmware
+that the multicast/broadcast packets are encrypted in software.
 
+Make '__ieee80211_subif_start_xmit' in tx to offload encapsulation
+for VLAN unicast packets using 8023 xmit path instead of current
+80211 xmit path.
+
+Tested, long-term in production environment using OpenWrt platform
+installed on multiple AX3600 with FT:
+ Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.9.0.1-01385-QCAHKSWPL_SILICONZ-1
+ Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.9.0.1-01977-QCAHKSWPL_SILICONZ-1
+
+Co-developed-by: Seevalamuthu Mariappan <seevalam@codeaurora.org>
 Signed-off-by: Seevalamuthu Mariappan <seevalam@codeaurora.org>
-Signed-off-by: Gautham Kumar Senthilkumaran <quic_gauthamk@quicinc.com>
 Signed-off-by: David Rapan <david@rapan.cz>
 ---
- net/mac80211/tx.c                       |  15 +++
+ net/mac80211/tx.c                          |  15 +++
  1 files changed, 15 insertions(+)
 
 --- a/net/mac80211/tx.c
