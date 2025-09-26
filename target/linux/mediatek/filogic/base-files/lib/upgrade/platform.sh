@@ -12,6 +12,18 @@ asus_initial_setup()
 	ubimkvol /dev/ubi0 -N jffs2 -s 0x3e000
 }
 
+buffalo_initial_setup()
+{
+	local mtdnum="$( find_mtd_index ubi )"
+	if [ ! "$mtdnum" ]; then
+		echo "unable to find mtd partition ubi"
+		return 1
+	fi
+
+	ubidetach -m "$mtdnum"
+	ubiformat /dev/mtd$mtdnum -y
+}
+
 xiaomi_initial_setup()
 {
 	# initialize UBI and setup uboot-env if it's running on initramfs
@@ -71,9 +83,11 @@ platform_do_upgrade() {
 	bananapi,bpi-r3|\
 	bananapi,bpi-r3-mini|\
 	bananapi,bpi-r4|\
+	bananapi,bpi-r4-2g5|\
 	bananapi,bpi-r4-poe|\
 	cmcc,a10-ubootmod|\
 	cmcc,rax3000m|\
+	cudy,tr3000-v1-ubootmod|\
 	gatonetworks,gdsp|\
 	h3c,magic-nx30-pro|\
 	jcg,q30-pro|\
@@ -88,6 +102,7 @@ platform_do_upgrade() {
 	netcore,n60-pro|\
 	qihoo,360t7|\
 	routerich,ax3000-ubootmod|\
+ 	snr,snr-cpe-ax2|\
 	tplink,tl-xdr4288|\
 	tplink,tl-xdr6086|\
 	tplink,tl-xdr6088|\
@@ -107,6 +122,7 @@ platform_do_upgrade() {
 	glinet,gl-x3000|\
 	glinet,gl-xe3000|\
 	huasifei,wh3000|\
+	huasifei,wh3000-pro|\
 	smartrg,sdg-8612|\
 	smartrg,sdg-8614|\
 	smartrg,sdg-8622|\
@@ -127,7 +143,9 @@ platform_do_upgrade() {
 		CI_KERNPART="linux"
 		nand_do_upgrade "$1"
 		;;
-	cudy,wr3000h-v1)
+	buffalo,wsr-6000ax8|\
+	cudy,wr3000h-v1|\
+	cudy,wr3000p-v1)
 		CI_UBIPART="ubi"
 		nand_do_upgrade "$1"
 		;;
@@ -142,10 +160,36 @@ platform_do_upgrade() {
 		fw_setenv sw_tryactive 0
 		nand_do_upgrade "$1"
 		;;
+	elecom,wrc-x3000gs3)
+		local bootnum="$(mstc_rw_bootnum)"
+		case "$bootnum" in
+		1|2)
+			CI_UBIPART="ubi$bootnum"
+			[ -z "$(find_mtd_index $CI_UBIPART)" ] &&
+				CI_UBIPART="ubi"
+			;;
+		*)
+			v "invalid bootnum found ($bootnum), rebooting..."
+			nand_do_upgrade_failed
+			;;
+		esac
+		nand_do_upgrade "$1"
+		;;
 	mercusys,mr80x-v3|\
 	mercusys,mr90x-v1|\
+	tplink,archer-ax80-v1|\
 	tplink,re6000xd)
 		CI_UBIPART="ubi0"
+		nand_do_upgrade "$1"
+		;;
+	tplink,fr365-v1)
+		CI_UBIPART="ubi"
+		CI_KERNPART="kernel"
+		CI_ROOTPART="rootfs"
+		nand_do_upgrade "$1"
+		;;
+	teltonika,rutc50)
+		CI_UBIPART="$(cmdline_get_var ubi.mtd)"
 		nand_do_upgrade "$1"
 		;;
 	nradio,c8-668gl)
@@ -202,9 +246,11 @@ platform_check_image() {
 	bananapi,bpi-r3|\
 	bananapi,bpi-r3-mini|\
 	bananapi,bpi-r4|\
+	bananapi,bpi-r4-2g5|\
 	bananapi,bpi-r4-poe|\
 	cmcc,a10-ubootmod|\
 	cmcc,rax3000m|\
+	cudy,tr3000-v1-ubootmod|\
 	gatonetworks,gdsp|\
 	h3c,magic-nx30-pro|\
 	jcg,q30-pro|\
@@ -228,6 +274,8 @@ platform_check_image() {
 		fit_check_image "$1"
 		return $?
 		;;
+	creatlentem,clt-r30b1|\
+	creatlentem,clt-r30b1-112m|\
 	nradio,c8-668gl)
 		# tar magic `ustar`
 		magic="$(dd if="$1" bs=1 skip=257 count=5 2>/dev/null)"
@@ -253,8 +301,11 @@ platform_copy_config() {
 	bananapi,bpi-r3|\
 	bananapi,bpi-r3-mini|\
 	bananapi,bpi-r4|\
+	bananapi,bpi-r4-2g5|\
 	bananapi,bpi-r4-poe|\
-	cmcc,rax3000m)
+	cmcc,rax3000m|\
+	gatonetworks,gdsp|\
+	mediatek,mt7988a-rfb)
 		if [ "$CI_METHOD" = "emmc" ]; then
 			emmc_copy_config
 		fi
@@ -268,6 +319,7 @@ platform_copy_config() {
 	glinet,gl-x3000|\
 	glinet,gl-xe3000|\
 	huasifei,wh3000|\
+	huasifei,wh3000-pro|\
 	jdcloud,re-cp-03|\
 	nradio,c8-668gl|\
 	smartrg,sdg-8612|\
@@ -293,6 +345,9 @@ platform_pre_upgrade() {
 	asus,tuf-ax6000|\
 	asus,zenwifi-bt8)
 		asus_initial_setup
+		;;
+	buffalo,wsr-6000ax8)
+		buffalo_initial_setup
 		;;
 	xiaomi,mi-router-ax3000t|\
 	xiaomi,mi-router-wr30u-stock|\
